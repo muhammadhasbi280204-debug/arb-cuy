@@ -39,7 +39,7 @@ if not API_KEY or not API_SECRET:
 SYMBOL_A       = "BTCUSDT"
 SYMBOL_B       = "ETHUSDT"
 LOOKBACK       = 30
-Z_ENTRY        = 2.0
+Z_ENTRY        = 2.5
 Z_EXIT         = 0.5
 TRADE_USDT_PCT = 0.05    # 5% dari saldo USDT per trade
 INTERVAL_SEC   = 10
