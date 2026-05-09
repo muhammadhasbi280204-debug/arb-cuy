@@ -1,10 +1,13 @@
 """
-Bot Trading v8 — Anti Bearish Entry
-=====================================
+Bot Trading v8 — Anti Bearish Entry + Smart Cooldown
+======================================================
 Fix dari v7:
 - BTC trend filter: kalau BTC turun, SKIP semua LONG altcoin
 - MIN_FNG naik ke 45 (lebih konservatif)
-- Cooldown 30 menit setelah 2 loss berturut-turut
+- Cooldown KONTEKSTUAL setelah 2 loss berturut-turut:
+  * Cooldown aktif hanya kalau BTC masih BEAR/MILD_BEAR ATAU breadth masih < 40%
+  * Cooldown otomatis batal kalau BTC balik BULL/MILD_BULL DAN breadth > 50%
+  * Tidak pakai timer buta 30 menit — tergantung kondisi market
 - Market breadth check: hitung berapa % coin yang turun
 - Konfirmasi multi-timeframe lebih ketat (15m + 1H harus searah)
 - SL lebih longgar (2x ATR) supaya tidak kena noise
@@ -37,8 +40,15 @@ MIN_FNG               = 45       # lebih konservatif (was 35)
 MAX_POSITIONS         = 2
 SCAN_INTERVAL         = 60
 MAX_CONSEC_LOSS       = 2        # cooldown setelah berapa loss berturut-turut
-COOLDOWN_MINUTES      = 30       # menit cooldown
 MIN_MARKET_BREADTH    = 0.45     # minimal 45% coin harus bullish sebelum LONG
+
+# ── Smart Cooldown Thresholds ────────────────────────
+# Cooldown aktif kalau salah satu kondisi ini terpenuhi setelah MAX_CONSEC_LOSS
+COOLDOWN_BTC_BAD      = {"BEAR", "MILD_BEAR"}   # BTC trend yang dianggap "masih buruk"
+COOLDOWN_BREADTH_MAX  = 0.40                    # breadth < 40% → market masih lemah
+# Cooldown batal kalau KEDUA kondisi ini terpenuhi
+COOLDOWN_BTC_RECOVER  = {"BULL", "MILD_BULL"}   # BTC sudah balik positif
+COOLDOWN_BREADTH_MIN  = 0.50                    # breadth sudah > 50%
 
 SYMBOLS = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
@@ -53,7 +63,7 @@ open_positions  = {}
 trade_log       = []
 _last_candle    = {}
 _consec_loss    = 0
-_cooldown_until = 0   # timestamp sampai kapan cooldown
+_in_cooldown    = False   # flag cooldown kontekstual (bukan timer)
 
 # ════════════════════════════════════════════════════
 #  UTILS
@@ -227,6 +237,45 @@ def refresh_macro():
         except: pass
 
 # ════════════════════════════════════════════════════
+#  SMART COOLDOWN LOGIC
+# ════════════════════════════════════════════════════
+def check_cooldown_recover():
+    """
+    Cek apakah kondisi market sudah membaik dan cooldown bisa dibatalkan.
+    Cooldown batal kalau BTC sudah recover DAN market breadth sudah cukup tinggi.
+    Returns True kalau cooldown harus dibatalkan.
+    """
+    btc_ok      = _macro["btc_trend"] in COOLDOWN_BTC_RECOVER
+    breadth_ok  = _macro["market_breadth"] >= COOLDOWN_BREADTH_MIN
+    return btc_ok and breadth_ok
+
+def is_cooldown_active():
+    """
+    Cooldown aktif kalau:
+    1. Flag _in_cooldown True, DAN
+    2. Market masih buruk: BTC masih BEAR/MILD_BEAR ATAU breadth masih < 40%
+    Kalau market sudah recover → batalkan cooldown otomatis.
+    """
+    global _in_cooldown
+    if not _in_cooldown:
+        return False
+    # Cek apakah market sudah recover
+    if check_cooldown_recover():
+        _in_cooldown = False
+        print(f"  ✅ Cooldown dibatalkan! BTC:{_macro['btc_trend']} Breadth:{_macro['market_breadth']*100:.0f}% — market sudah recover")
+        return False
+    return True
+
+def cooldown_reason():
+    """Jelaskan kenapa cooldown masih aktif."""
+    reasons = []
+    if _macro["btc_trend"] in COOLDOWN_BTC_BAD:
+        reasons.append(f"BTC masih {_macro['btc_trend']}")
+    if _macro["market_breadth"] < COOLDOWN_BREADTH_MIN:
+        reasons.append(f"breadth {_macro['market_breadth']*100:.0f}% < {COOLDOWN_BREADTH_MIN*100:.0f}%")
+    return " & ".join(reasons) if reasons else "kondisi belum jelas"
+
+# ════════════════════════════════════════════════════
 #  REGIME (1H per symbol)
 # ════════════════════════════════════════════════════
 def get_regime(symbol):
@@ -380,13 +429,12 @@ def get_funding(symbol):
 #  MASTER ENTRY FILTER
 # ════════════════════════════════════════════════════
 def should_enter(symbol, df):
-    global _cooldown_until
     info = {}
 
-    # ── 1. Cooldown check ────────────────────────────────────
-    if time.time() < _cooldown_until:
-        remaining = int((_cooldown_until - time.time()) / 60)
-        return None, 0, 0, {"skip": f"Cooldown {remaining} menit lagi"}
+    # ── 1. Smart Cooldown check ───────────────────────────────
+    # Cooldown kontekstual: aktif sampai market recover, bukan timer buta
+    if is_cooldown_active():
+        return None, 0, 0, {"skip": f"🧊 Cooldown aktif ({cooldown_reason()})"}
 
     # ── 2. Macro hard blocks ──────────────────────────────────
     fng     = _macro["fng"]
@@ -534,7 +582,7 @@ def open_trade(symbol, side, sl_price, tp_price, info):
         print(f"  ❌ [{symbol}] Gagal entry: {e}")
 
 def close_trade(symbol, reason=""):
-    global _consec_loss, _cooldown_until
+    global _consec_loss, _in_cooldown
     try:
         amt = get_exchange_amt(symbol)
         if amt is None:
@@ -552,11 +600,7 @@ def close_trade(symbol, reason=""):
                     print(f"     {'🟢' if pnl>=0 else '🔴'} Est P&L: {pnl:+.4f} USDT ({pct:+.2f}%)")
                     trade_log.append({"symbol":symbol,"side":pos["side"],
                                       "pnl":round(pnl,4),"reason":"External close"})
-                    # Update loss streak
-                    if pnl < 0:
-                        _consec_loss += 1
-                    else:
-                        _consec_loss = 0
+                    _update_loss_streak(pnl)
                 open_positions.pop(symbol, None)
             return True
 
@@ -576,20 +620,44 @@ def close_trade(symbol, reason=""):
             print(f"     {emoji} P&L: {pnl:+.4f} USDT ({pct:+.2f}%)")
             trade_log.append({"symbol":symbol,"side":pos["side"],
                               "pnl":round(pnl,4),"reason":reason})
-            # Update consecutive loss & cooldown
-            if pnl < 0:
-                _consec_loss += 1
-                if _consec_loss >= MAX_CONSEC_LOSS:
-                    _cooldown_until = time.time() + COOLDOWN_MINUTES * 60
-                    print(f"  🧊 {MAX_CONSEC_LOSS} loss berturut-turut! Cooldown {COOLDOWN_MINUTES} menit...")
-            else:
-                _consec_loss = 0
+            _update_loss_streak(pnl)
 
         open_positions.pop(symbol, None)
         return True
     except Exception as e:
         print(f"  ❌ [{symbol}] Gagal close: {e}")
         return False
+
+def _update_loss_streak(pnl):
+    """
+    Update consecutive loss counter dan aktifkan/reset cooldown kontekstual.
+    Cooldown aktif kalau sudah MAX_CONSEC_LOSS loss DAN market memang buruk.
+    Kalau market sudah bagus, cooldown tidak diaktifkan meski loss streak.
+    """
+    global _consec_loss, _in_cooldown
+    if pnl < 0:
+        _consec_loss += 1
+        if _consec_loss >= MAX_CONSEC_LOSS:
+            # Cek kondisi market sekarang
+            btc_bad     = _macro["btc_trend"] in COOLDOWN_BTC_BAD
+            breadth_bad = _macro["market_breadth"] < COOLDOWN_BREADTH_MAX
+            if btc_bad or breadth_bad:
+                _in_cooldown = True
+                reasons = []
+                if btc_bad:     reasons.append(f"BTC {_macro['btc_trend']}")
+                if breadth_bad: reasons.append(f"breadth {_macro['market_breadth']*100:.0f}%")
+                print(f"  🧊 {MAX_CONSEC_LOSS} loss berturut-turut + market buruk ({', '.join(reasons)}) → Cooldown aktif!")
+                print(f"     Cooldown akan batal otomatis kalau BTC recover ke BULL/MILD_BULL DAN breadth > {COOLDOWN_BREADTH_MIN*100:.0f}%")
+            else:
+                # Market masih bagus → tidak cooldown, reset saja streak-nya
+                print(f"  ⚡ {MAX_CONSEC_LOSS} loss berturut-turut TAPI market masih bagus (BTC:{_macro['btc_trend']} breadth:{_macro['market_breadth']*100:.0f}%) → lanjut trading!")
+                _consec_loss = 0   # reset agar tidak terus trigger
+    else:
+        _consec_loss = 0
+        if _in_cooldown:
+            # Win setelah cooldown → reset
+            _in_cooldown = False
+            print(f"  ✅ Win! Cooldown diakhiri.")
 
 # ════════════════════════════════════════════════════
 #  POSITION MANAGEMENT
@@ -666,7 +734,7 @@ def print_summary():
     wins  = sum(1 for t in trade_log if t["pnl"]>0)
     n     = len(trade_log)
     wr    = wins/n*100 if n else 0
-    cd    = f" | 🧊 Cooldown" if time.time() < _cooldown_until else ""
+    cd    = f" | 🧊 Cooldown ({cooldown_reason()})" if _in_cooldown else ""
     print(f"\n  📊 {n} trades | WR:{wr:.0f}% W:{wins} L:{n-wins} | P&L:{total:+.4f}U | streak:{_consec_loss}L{cd}")
     for t in trade_log[-3:]:
         e = "🟢" if t["pnl"]>0 else "🔴"
@@ -676,14 +744,15 @@ def print_summary():
 #  MAIN LOOP
 # ════════════════════════════════════════════════════
 def run_bot():
-    print("🤖 Bot v8 — Anti Bearish Entry")
+    print("🤖 Bot v8 — Anti Bearish Entry + Smart Cooldown")
     print(f"   Leverage      : {LEVERAGE}x | Order: ${ORDER_USDT} USDT")
     print(f"   SL/TP         : {ATR_SL_MULT}x/{ATR_TP_MULT}x ATR (RR 1:2)")
     print(f"   Trailing      : aktif setelah +{TRAIL_TRIGGER*100}%")
     print(f"   Min Votes     : {MIN_TA_VOTES}/10 | Min F&G: {MIN_FNG}")
     print(f"   BTC Filter    : BEAR/MILD_BEAR → skip LONG")
     print(f"   Market Breadth: min {MIN_MARKET_BREADTH*100:.0f}% coin bullish untuk LONG")
-    print(f"   Cooldown      : {COOLDOWN_MINUTES} menit setelah {MAX_CONSEC_LOSS} loss berturut-turut")
+    print(f"   Smart Cooldown: aktif setelah {MAX_CONSEC_LOSS} loss JIKA market buruk")
+    print(f"                   batal otomatis kalau BTC recover + breadth > {COOLDOWN_BREADTH_MIN*100:.0f}%")
     print(f"   Max Posisi    : {MAX_POSITIONS}\n")
 
     print("  ⏳ Setup...")
@@ -696,9 +765,14 @@ def run_bot():
     while True:
         cycle += 1
         refresh_macro()
+
+        # Cek cooldown recover di setiap cycle (bukan hanya saat entry)
+        if _in_cooldown:
+            check_cooldown_recover()  # akan print notif kalau recover
+
         manage_positions()
 
-        cd_info = f" 🧊 COOLDOWN {int((_cooldown_until-time.time())/60)+1}m" if time.time() < _cooldown_until else ""
+        cd_info = f" 🧊 COOLDOWN ({cooldown_reason()})" if _in_cooldown else ""
         print(f"\n{'='*68}")
         print(f"  🔄 #{cycle} {time.strftime('%H:%M:%S')} | F&G:{_macro['fng']}({_macro['fng_label']}) | USDT:{_macro['usdt_d']}% | News:{_macro['news']}{cd_info}")
         print(f"  📈 BTC:{_macro['btc_trend']} | Breadth:{_macro['market_breadth']*100:.0f}% bullish")
@@ -710,7 +784,7 @@ def run_bot():
         candidates = []
 
         if len(open_positions) < MAX_POSITIONS and _macro["news"] != "negative" \
-           and time.time() >= _cooldown_until:
+           and not _in_cooldown:
             for symbol in symbols:
                 if symbol in open_positions: continue
                 df = get_ohlcv(symbol, Client.KLINE_INTERVAL_15MINUTE, 220)
@@ -732,8 +806,9 @@ def run_bot():
             else:
                 print(f"  ⏳ {skipped} coins di-scan, belum ada setup valid")
         else:
-            if time.time() < _cooldown_until:
-                print(f"  🧊 Dalam cooldown — istirahat dulu")
+            if _in_cooldown:
+                print(f"  🧊 Cooldown aktif — {cooldown_reason()}")
+                print(f"     Akan lanjut kalau BTC → BULL/MILD_BULL DAN breadth > {COOLDOWN_BREADTH_MIN*100:.0f}%")
             else:
                 print(f"  ⏸️  Posisi penuh atau kondisi tidak aman")
 
