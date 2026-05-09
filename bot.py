@@ -12,6 +12,10 @@ Fix dari v7:
 - Konfirmasi multi-timeframe lebih ketat (15m + 1H harus searah)
 - SL lebih longgar (2x ATR) supaya tidak kena noise
 - Tidak entry kalau semua sinyal cuma LONG di market yang merah
+
+Update v8.1:
+- SYMBOLS diperluas dari 28 → 128 token (top market cap)
+- Mencakup: L1, L2, DeFi, AI/Data, Gaming/NFT, Meme, Mid-cap
 """
 
 import os, time, math, requests
@@ -50,6 +54,9 @@ COOLDOWN_BREADTH_MAX  = 0.40                    # breadth < 40% → market masih
 COOLDOWN_BTC_RECOVER  = {"BULL", "MILD_BULL"}   # BTC sudah balik positif
 COOLDOWN_BREADTH_MIN  = 0.50                    # breadth sudah > 50%
 
+# ════════════════════════════════════════════════════
+#  SYMBOLS — 128 token top market cap
+# ════════════════════════════════════════════════════
 SYMBOLS = [
     # ── Original 28 ──────────────────────────────────────
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
@@ -88,9 +95,9 @@ SYMBOLS = [
     "NOTUSDT","DOGSUSDT","CATUSDT","HMSTRUSDT","CATIUSDT",
     "GOATSUSDT","MOODENGUSDT","ORDIUSDT","SATSUSDT","WLDUSDT",
 
-    # ── Misc / Mid-cap ───────────────────────────────────
-    "ANKRUSDT","SKLUSDT","SXPUSDT","WAVESUSDT","GMTUSDT",
-    "LOOMUSDT","PENGUUSDT","BNXUSDT","PYTHUSDT","PDAUSDT",
+    # ── Misc / Mid-cap ────────────────────────────────────
+    "ANKRUSDT","SKLUSDT","SXPUSDT","WAVESUSDT","PENGUUSDT",
+    "LOOMUSDT","BNXUSDT","PYTHUSDT","PDAUSDT","MAGICUSDT",
 ]
 
 open_positions  = {}
@@ -138,7 +145,10 @@ def validate_symbols():
     try:
         valid  = {s["symbol"] for s in client.futures_exchange_info()["symbols"] if s["status"]=="TRADING"}
         result = list(dict.fromkeys([s for s in SYMBOLS if s in valid]))
-        print(f"  ✅ {len(result)} symbols valid")
+        print(f"  ✅ {len(result)}/{len(SYMBOLS)} symbols valid di Binance Futures")
+        invalid = [s for s in SYMBOLS if s not in valid]
+        if invalid:
+            print(f"  ⚠️  Di-skip (tidak tersedia): {', '.join(invalid)}")
         return result
     except:
         return list(dict.fromkeys(SYMBOLS))
@@ -778,7 +788,7 @@ def print_summary():
 #  MAIN LOOP
 # ════════════════════════════════════════════════════
 def run_bot():
-    print("🤖 Bot v8 — Anti Bearish Entry + Smart Cooldown")
+    print("🤖 Bot v8.1 — Anti Bearish Entry + Smart Cooldown + 128 Symbols")
     print(f"   Leverage      : {LEVERAGE}x | Order: ${ORDER_USDT} USDT")
     print(f"   SL/TP         : {ATR_SL_MULT}x/{ATR_TP_MULT}x ATR (RR 1:2)")
     print(f"   Trailing      : aktif setelah +{TRAIL_TRIGGER*100}%")
@@ -787,13 +797,14 @@ def run_bot():
     print(f"   Market Breadth: min {MIN_MARKET_BREADTH*100:.0f}% coin bullish untuk LONG")
     print(f"   Smart Cooldown: aktif setelah {MAX_CONSEC_LOSS} loss JIKA market buruk")
     print(f"                   batal otomatis kalau BTC recover + breadth > {COOLDOWN_BREADTH_MIN*100:.0f}%")
-    print(f"   Max Posisi    : {MAX_POSITIONS}\n")
+    print(f"   Max Posisi    : {MAX_POSITIONS}")
+    print(f"   Total Symbols : {len(SYMBOLS)} (sebelum validasi)\n")
 
-    print("  ⏳ Setup...")
+    print("  ⏳ Setup & validasi symbols...")
     symbols = validate_symbols()
     for s in symbols: get_sym_info(s)
     refresh_macro()
-    print(f"  ✅ {len(symbols)} symbols | F&G:{_macro['fng']} | BTC:{_macro['btc_trend']} | News:{_macro['news']}\n")
+    print(f"  ✅ {len(symbols)} symbols aktif | F&G:{_macro['fng']} | BTC:{_macro['btc_trend']} | News:{_macro['news']}\n")
 
     cycle = 0
     while True:
