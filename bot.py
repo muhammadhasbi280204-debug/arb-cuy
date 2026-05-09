@@ -34,7 +34,7 @@ client.FUTURES_URL = "https://testnet.binancefuture.com/fapi"
 #  CONFIG — sesuaikan dengan saldo kamu
 # ════════════════════════════════════════════════════
 LEVERAGE              = 10
-ORDER_USDT            = 55       # ganti ke 2 untuk akun real $2.5
+ORDER_USDT            = 10       # ganti ke 2 untuk akun real $2.5
 ATR_SL_MULT           = 2.0      # lebih longgar (was 1.5) — kurangi noise SL
 ATR_TP_MULT           = 4.0      # RR 1:2
 TRAIL_TRIGGER         = 0.006    # aktifkan trailing setelah +0.6%
