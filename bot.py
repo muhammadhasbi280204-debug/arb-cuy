@@ -51,12 +51,46 @@ COOLDOWN_BTC_RECOVER  = {"BULL", "MILD_BULL"}   # BTC sudah balik positif
 COOLDOWN_BREADTH_MIN  = 0.50                    # breadth sudah > 50%
 
 SYMBOLS = [
+    # ── Original 28 ──────────────────────────────────────
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
     "ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","DOTUSDT",
     "MATICUSDT","LTCUSDT","ATOMUSDT","UNIUSDT","ETCUSDT",
     "NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","INJUSDT",
     "SUIUSDT","TIAUSDT","AAVEUSDT","RUNEUSDT","FILUSDT",
     "1000PEPEUSDT","WIFUSDT","JUPUSDT",
+
+    # ── Layer 1 / Infrastructure ──────────────────────────
+    "TRXUSDT","XLMUSDT","BCHUSDT","TONUSDT","VETUSDT",
+    "ICPUSDT","HBARUSDT","STXUSDT","KASUSDT","ALGOUSDT",
+    "XTZUSDT","ZECUSDT","DASHUSDT","EOSUSDT","NEOUSDT",
+    "FLOWUSDT","QNTUSDT","IOTAUSDT","TAOUSDT","SEIUSDT",
+    "DYMUSDT","MANTAUSDT","AKTUSDT","BEAMXUSDT","POLTUSDT",
+
+    # ── DeFi ─────────────────────────────────────────────
+    "LDOUSDT","CRVUSDT","MKRUSDT","SNXUSDT","COMPUSDT",
+    "YFIUSDT","1INCHUSDT","SUSHIUSDT","BALUSDT","CAKEUSDT",
+    "GMXUSDT","DYDXUSDT","STGUSDT","RDNTUSDT","ONDOUSDT",
+
+    # ── AI / Data ─────────────────────────────────────────
+    "FETUSDT","RENDERUSDT","AGIXUSDT","RNDRUSDT","OCEANUSDT",
+    "AIUSDT","GLMUSDT","MOVRUSDT","EIGENUSDT","ENAUSDT",
+
+    # ── Gaming / NFT / Metaverse ──────────────────────────
+    "SANDUSDT","MANAUSDT","AXSUSDT","GALAUSDT","ENJUSDT",
+    "CHZUSDT","IMXUSDT","MAGICUSDT","GMTUSDT","RONINUSDT",
+    "XAIUSDT","PIXELUSDT","ACEUSDT","AGLDUSDT","BLURUSDT",
+
+    # ── Layer 2 / Scaling ─────────────────────────────────
+    "STRKUSDT","ZKUSDT","ZROUSDT","ALTUSDT","MNTUSDT",
+    "WUSDT","PORTALUSDT","LISTAUSDT","IOUSDT","CELRUSDT",
+
+    # ── Meme / Community ─────────────────────────────────
+    "NOTUSDT","DOGSUSDT","CATUSDT","HMSTRUSDT","CATIUSDT",
+    "GOATSUSDT","MOODENGUSDT","ORDIUSDT","SATSUSDT","WLDUSDT",
+
+    # ── Misc / Mid-cap ───────────────────────────────────
+    "ANKRUSDT","SKLUSDT","SXPUSDT","WAVESUSDT","GMTUSDT",
+    "LOOMUSDT","PENGUUSDT","BNXUSDT","PYTHUSDT","PDAUSDT",
 ]
 
 open_positions  = {}
