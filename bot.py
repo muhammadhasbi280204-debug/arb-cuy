@@ -1,7 +1,7 @@
 """
 Bot Trading v13 — Precision High-WR Scalping
 =============================================
-CHANGELOG dari v12:
+CHANGELOG dari v12: 
 
 ═══ 1. VOLATILITY-TIERED SL CAP (KRITIS) ════════════════════════
   v12: SL flat max 3.0% untuk semua coin — IOSTUSDT bisa kena -3.5U
