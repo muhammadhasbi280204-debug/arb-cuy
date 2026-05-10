@@ -470,7 +470,76 @@ def refresh_macro():
 BULL_TRENDS = {"BULL", "MILD_BULL"}
 BEAR_TRENDS = {"BEAR", "MILD_BEAR"}
 
-def get_adaptive_min_score(direction):
+# ════════════════════════════════════════════════════
+#  MARKET CONTEXT — tentukan allowed directions & kondisi
+#  SEBELUM scan dimulai, bukan saat per-symbol
+# ════════════════════════════════════════════════════
+def get_market_context():
+    """
+    v12: Evaluasi kondisi macro SEKALI per siklus → tentukan:
+      - allowed_directions: set arah yang boleh dimasuki
+      - quality_gate: "PREMIUM" / "NORMAL" / "SKIP"
+      - reason: penjelasan singkat
+
+    Logika:
+      BTC 4H+1H BULL  → hanya LONG diperbolehkan (SHORT = forbidden)
+      BTC 4H+1H BEAR  → hanya SHORT diperbolehkan
+      BTC mixed       → keduanya boleh tapi dengan score lebih tinggi
+      Breadth <20%    → SKIP semua (market terlalu lemah, noise dominan)
+      Breadth 20-32%  → hanya SHORT premium
+      Session OFF     → naikkan threshold, bukan block total
+    """
+    t15 = _macro["btc_trend_15m"]
+    t1h = _macro["btc_trend_1h"]
+    t4h = _macro["btc_trend_4h"]
+    breadth = _macro["market_breadth"]
+
+    bull_tf = sum(1 for t in [t15, t1h, t4h] if t in BULL_TRENDS)
+    bear_tf = sum(1 for t in [t15, t1h, t4h] if t in BEAR_TRENDS)
+
+    # ── Breadth extreme — skip semua ──────────────────
+    # Dari log: breadth 15% = market hampir semua coin turun
+    # Tidak ada gunanya entry LONG, SHORT pun noise
+    if breadth < 0.18:
+        return set(), "SKIP", f"Breadth ekstrem rendah {breadth*100:.0f}% (<18%) — semua skip"
+
+    # ── BTC 4H+1H keduanya BULL → larang SHORT ────────
+    # Ini akar masalah dari log kamu: SHORT MANA+INJ kena exit
+    if t4h in BULL_TRENDS and t1h in BULL_TRENDS:
+        if breadth >= MIN_MARKET_BREADTH:
+            return {"LONG"}, "PREMIUM", f"BTC 4H+1H BULL ({t4h}/{t1h}) — LONG only"
+        else:
+            return {"LONG"}, "NORMAL", f"BTC 4H+1H BULL tapi breadth {breadth*100:.0f}%"
+
+    # ── BTC 4H+1H keduanya BEAR → larang LONG ─────────
+    if t4h in BEAR_TRENDS and t1h in BEAR_TRENDS:
+        if breadth <= 0.55:
+            return {"SHORT"}, "PREMIUM", f"BTC 4H+1H BEAR ({t4h}/{t1h}) — SHORT only"
+        else:
+            return {"SHORT"}, "NORMAL", f"BTC 4H+1H BEAR tapi breadth tinggi {breadth*100:.0f}%"
+
+    # ── BTC mixed (contoh: 4H BULL tapi 1H BEAR) ──────
+    # Kondisi choppy — izinkan keduanya tapi score lebih ketat
+    if bull_tf >= 2:
+        return {"LONG", "SHORT"}, "NORMAL", f"BTC mixed bullish {bull_tf}/3 TF"
+    if bear_tf >= 2:
+        return {"LONG", "SHORT"}, "NORMAL", f"BTC mixed bearish {bear_tf}/3 TF"
+
+    # ── BTC benar-benar sideways / semua MILD/SIDEWAYS ─
+    # Breadth jadi penentu utama
+    if breadth < MIN_MARKET_BREADTH:
+        return {"SHORT"}, "NORMAL", f"BTC sideways + breadth rendah {breadth*100:.0f}%"
+    if breadth > 0.68:
+        return {"LONG"}, "NORMAL", f"BTC sideways + breadth tinggi {breadth*100:.0f}%"
+
+    return {"LONG", "SHORT"}, "NORMAL", f"BTC sideways, breadth {breadth*100:.0f}% netral"
+
+def get_adaptive_min_score(direction, quality_gate="NORMAL"):
+    """
+    v12: Skor minimum menyesuaikan quality_gate dari get_market_context().
+    PREMIUM  = macro sangat mendukung → threshold turun lebih banyak
+    NORMAL   = macro mixed → threshold standar
+    """
     min_score = BASE_MIN_SCORE
     bonuses   = []
     t15 = _macro["btc_trend_15m"]
@@ -482,13 +551,21 @@ def get_adaptive_min_score(direction):
     else:
         btc_align = sum(1 for t in [t15, t1h, t4h] if t in BEAR_TRENDS)
 
+    # Bonus BTC alignment — lebih besar kalau PREMIUM
     if btc_align >= 3:
-        min_score -= SCORE_BONUS_BTC_ALIGN
-        bonuses.append(f"BTC3TF-{SCORE_BONUS_BTC_ALIGN}")
+        bonus = SCORE_BONUS_BTC_ALIGN + (3 if quality_gate == "PREMIUM" else 0)
+        min_score -= bonus
+        bonuses.append(f"BTC3TF-{bonus}")
     elif btc_align >= 2:
-        min_score -= SCORE_BONUS_BTC_ALIGN // 2
-        bonuses.append(f"BTC2TF-{SCORE_BONUS_BTC_ALIGN//2}")
+        bonus = SCORE_BONUS_BTC_ALIGN // 2
+        min_score -= bonus
+        bonuses.append(f"BTC2TF-{bonus}")
+    else:
+        # Tidak ada alignment = naikkan threshold (trading melawan macro)
+        min_score += 8
+        bonuses.append("BTC_noalign+8")
 
+    # Session
     active, session = is_active_session()
     if session == "OVERLAP":
         min_score -= 5; bonuses.append("OVERLAP-5")
@@ -497,6 +574,7 @@ def get_adaptive_min_score(direction):
     else:
         min_score += OFF_SESSION_PENALTY; bonuses.append(f"OFF+{OFF_SESSION_PENALTY}")
 
+    # F&G
     fng = _macro["fng"]
     if direction == "LONG" and fng < FNG_FEAR_ZONE:
         min_score += 6; bonuses.append("FNG_FEAR+6")
@@ -505,7 +583,14 @@ def get_adaptive_min_score(direction):
     elif direction == "LONG" and fng > FNG_GREED_ZONE:
         min_score -= 3; bonuses.append("FNG_GREED-3")
 
-    return max(min_score, 40), bonuses
+    # Breadth penalty tambahan
+    breadth = _macro["market_breadth"]
+    if breadth < 0.30 and direction == "LONG":
+        min_score += 10; bonuses.append(f"LOW_BREADTH+10")
+    elif breadth > 0.70 and direction == "SHORT":
+        min_score += 10; bonuses.append(f"HIGH_BREADTH+10")
+
+    return max(min_score, 42), bonuses
 
 def btc_multi_tf_ok_for(direction):
     t15 = _macro["btc_trend_15m"]
@@ -830,9 +915,17 @@ def cooldown_reason():
     return " & ".join(reasons) if reasons else "kondisi belum oke"
 
 # ════════════════════════════════════════════════════
-#  MASTER ENTRY FILTER (v11)
+#  MASTER ENTRY FILTER (v12)
 # ════════════════════════════════════════════════════
-def should_enter(symbol, df):
+def should_enter(symbol, df, allowed_dirs=None, quality_gate="NORMAL"):
+    """
+    v12: Terima allowed_dirs & quality_gate dari get_market_context()
+    yang sudah dievaluasi SEKALI di awal siklus — tidak perlu re-evaluasi
+    BTC macro per coin.
+    """
+    if allowed_dirs is None:
+        allowed_dirs = {"LONG", "SHORT"}
+
     # ── 0. Symbol cooldown ────────────────────────────
     if is_symbol_in_cooldown(symbol):
         remaining = get_symbol_cooldown_remaining(symbol)
@@ -875,27 +968,27 @@ def should_enter(symbol, df):
     if ta_dir == "NONE":
         return None, 0, 0, 0, {"skip": f"Arah tidak jelas ({score:.1f})"}
 
-    # ── 5. Confluence check (v11 BARU) ────────────────
-    # Harus ada minimal MIN_CONFLUENCE sinyal yang agree
+    # ── 5. Direction vs market context (v12 — KUNCI) ──
+    # Cek ini SEBELUM score threshold — tidak buang waktu hitung score
+    # kalau arahnya sudah dilarang oleh macro
+    if ta_dir not in allowed_dirs:
+        return None, 0, 0, 0, {"skip": f"Dir {ta_dir} dilarang (macro:{'/'.join(allowed_dirs)})"}
+
+    # ── 6. Confluence check ───────────────────────────
     if confluence < MIN_CONFLUENCE:
         return None, 0, 0, 0, {"skip": f"Confluence rendah ({confluence}/{MIN_CONFLUENCE})"}
 
-    # ── 6. Adaptive min score ─────────────────────────
-    min_score, score_ctx = get_adaptive_min_score(ta_dir)
+    # ── 7. Adaptive min score (pakai quality_gate) ────
+    min_score, score_ctx = get_adaptive_min_score(ta_dir, quality_gate)
     if score < min_score:
         return None, 0, 0, 0, {"skip": f"Score {score:.1f} < min {min_score}"}
 
-    # ── 7. F&G directional check ──────────────────────
+    # ── 8. F&G directional check ──────────────────────
     if ta_dir == "LONG" and fng > MAX_FNG_LONG:
         return None, 0, 0, 0, {"skip": f"F&G euphoria ({fng})"}
     if ta_dir == "LONG" and fng < MIN_FNG_ANY + 10:
         if score < min_score + 12:
             return None, 0, 0, 0, {"skip": f"Fear zone F&G={fng}, score kurang"}
-
-    # ── 8. BTC multi-TF ───────────────────────────────
-    btc_ok, btc_reason = btc_multi_tf_ok_for(ta_dir)
-    if not btc_ok:
-        return None, 0, 0, 0, {"skip": btc_reason}
 
     # ── 9. Market breadth ─────────────────────────────
     breadth = _macro["market_breadth"]
@@ -905,10 +998,11 @@ def should_enter(symbol, df):
         return None, 0, 0, 0, {"skip": f"Breadth terlalu tinggi untuk SHORT"}
 
     # ── 10. Regime vs direction ───────────────────────
-    if ta_dir == "LONG" and regime == "BEAR" and score < min_score + 18:
-        return None, 0, 0, 0, {"skip": "Counter-trend LONG di BEAR, score tidak cukup"}
-    if ta_dir == "SHORT" and regime == "BULL" and score < min_score + 18:
-        return None, 0, 0, 0, {"skip": "Counter-trend SHORT di BULL, score tidak cukup"}
+    # v12: counter-trend threshold lebih ketat (+22, was +18)
+    if ta_dir == "LONG" and regime == "BEAR" and score < min_score + 22:
+        return None, 0, 0, 0, {"skip": "Counter-trend LONG di BEAR, butuh score tinggi"}
+    if ta_dir == "SHORT" and regime == "BULL" and score < min_score + 22:
+        return None, 0, 0, 0, {"skip": "Counter-trend SHORT di BULL, butuh score tinggi"}
 
     # ── 11. Volume check ──────────────────────────────
     recent = df_closed.iloc[-4:-1]
@@ -921,7 +1015,6 @@ def should_enter(symbol, df):
                 vol_ok = True; break
             if ta_dir == "SHORT" and row["close"] < row["open"] and br < 0.48:
                 vol_ok = True; break
-    # Fallback: momentum 5 candle
     if not vol_ok:
         recent5 = df_closed.tail(6).iloc[:-1]
         if ta_dir == "LONG":
@@ -962,16 +1055,13 @@ def should_enter(symbol, df):
     if not m5_ok and score < min_score + 10:
         return None, 0, 0, 0, {"skip": f"5m contra + score pas-pasan"}
 
-    # ── 17. Fee-aware SL/TP (v11) ─────────────────────
+    # ── 17. Fee-aware SL/TP ───────────────────────────
     atr  = df_closed["atr"].iloc[-1]
     sl_p, tp1_p, tp2_p, sl_pct, tp1_pct, rr = calc_fee_aware_sltp(
         current_price, ta_dir, atr)
 
-    # SL terlalu besar untuk scalping
     if sl_pct > 3.0:
         return None, 0, 0, 0, {"skip": f"ATR besar (SL={sl_pct:.1f}%)"}
-
-    # R:R minimal 1.4 setelah fee
     if rr < 1.4:
         return None, 0, 0, 0, {"skip": f"R:R kurang ({rr:.2f})"}
 
@@ -985,6 +1075,7 @@ def should_enter(symbol, df):
         "confluence":     confluence,
         "breakdown":      breakdown,
         "regime":         regime,
+        "quality_gate":   quality_gate,
         "btc_15m":        _macro["btc_trend_15m"],
         "btc_1h":         _macro["btc_trend_1h"],
         "btc_4h":         _macro["btc_trend_4h"],
@@ -1002,25 +1093,27 @@ def should_enter(symbol, df):
     return ta_dir, sl_p, tp1_p, tp2_p, info
 
 # ════════════════════════════════════════════════════
-#  PARALLEL SCAN (v11 BARU)
+#  PARALLEL SCAN (v12)
 # ════════════════════════════════════════════════════
-def scan_symbol(symbol):
-    """Worker untuk parallel scan. Return tuple atau None."""
+def scan_symbol(symbol, allowed_dirs, quality_gate):
+    """Worker untuk parallel scan. Market context dikirim dari main loop."""
     if symbol in open_positions: return None
     df = get_ohlcv(symbol, Client.KLINE_INTERVAL_15MINUTE, 230)
     if df is None or len(df) < 80: return None
-    side, sl, tp1, tp2, info = should_enter(symbol, df)
+    side, sl, tp1, tp2, info = should_enter(symbol, df, allowed_dirs, quality_gate)
     if side:
         return (symbol, side, sl, tp1, tp2, info)
     return None
 
-def parallel_scan(symbols, max_workers=6):
+def parallel_scan(symbols, allowed_dirs, quality_gate, max_workers=6):
     """Scan semua symbol secara paralel, return list candidates."""
     candidates = []
     skipped    = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(scan_symbol, sym): sym for sym in symbols
-                   if sym not in open_positions}
+        futures = {
+            executor.submit(scan_symbol, sym, allowed_dirs, quality_gate): sym
+            for sym in symbols if sym not in open_positions
+        }
         for future in as_completed(futures):
             try:
                 result = future.result(timeout=15)
@@ -1028,7 +1121,7 @@ def parallel_scan(symbols, max_workers=6):
                     candidates.append(result)
                 else:
                     skipped += 1
-            except Exception as e:
+            except Exception:
                 skipped += 1
     return candidates, skipped
 
@@ -1319,15 +1412,16 @@ def print_summary():
 #  MAIN LOOP
 # ════════════════════════════════════════════════════
 def run_bot():
-    print("🤖 Bot v11 — High-Precision Scalping")
+    print("🤖 Bot v12 — High-WR Directional Scalping")
     print(f"   Leverage    : {LEVERAGE}x | Order: ${ORDER_USDT} USDT")
     print(f"   Fee         : {TAKER_FEE*100:.3f}% per sisi ({ROUND_TRIP_FEE*100:.3f}% round-trip)")
     print(f"   SL/TP       : Fee-aware | R:R min {RR_RATIO}:1")
-    print(f"   Score       : BASE={BASE_MIN_SCORE} + adaptive | Confluence min {MIN_CONFLUENCE}/5")
+    print(f"   Score       : BASE={BASE_MIN_SCORE} + adaptive | Confluence min {MIN_CONFLUENCE}/7")
+    print(f"   v12 KEY     : Market context dievaluasi per siklus — arah terlarang tidak masuk")
+    print(f"                 BTC 4H+1H BULL → LONG only | BTC 4H+1H BEAR → SHORT only")
+    print(f"                 Breadth <18% → SKIP semua | Counter-trend threshold +22 (was +18)")
     print(f"   Trailing    : ATR-based (aktif setelah +{TRAIL_TRIGGER*100:.1f}%)")
     print(f"   Max hold    : {MAX_HOLD_MINUTES} menit (paksa exit)")
-    print(f"   Dynamic size: aktif (score+F&G+streak aware)")
-    print(f"   Parallel    : 6 workers concurrent scan")
     print(f"   Symbols     : {len(SYMBOLS)} coin (akan difilter yang tidak tersedia)\n")
 
     print("  ⏳ Validasi symbols & setup...")
@@ -1365,22 +1459,30 @@ def run_bot():
 
         if len(open_positions) < MAX_POSITIONS and not _in_cooldown and \
            _macro["news"] != "strong_negative":
-            print(f"  🔍 Scanning {len(symbols)} symbols (parallel)...")
-            candidates, skipped = parallel_scan(symbols)
 
-            if candidates:
-                # Sort by score terbaik
-                candidates.sort(key=lambda x: x[5].get("score_num", 0), reverse=True)
-                print(f"\n  🎯 {len(candidates)} setup valid | {skipped} di-skip")
-                for sym, side, sl, tp1, tp2, info in candidates[:3]:
-                    print(f"     ⭐ {sym} {side} | Score:{info.get('score','?')} | "
-                          f"Confluence:{info.get('confluence','?')}/{MIN_CONFLUENCE} | "
-                          f"R:R:{info.get('rr','?')}")
-                for sym, side, sl, tp1, tp2, info in candidates:
-                    if len(open_positions) >= MAX_POSITIONS: break
-                    open_trade(sym, side, sl, tp1, tp2, info)
+            # ── v12: Evaluasi market context SEKALI per siklus ──
+            allowed_dirs, quality_gate, ctx_reason = get_market_context()
+
+            if not allowed_dirs:
+                # SKIP = kondisi terlalu buruk untuk scan
+                print(f"  🚫 SKIP SCAN — {ctx_reason}")
             else:
-                print(f"  ⏳ {skipped} di-scan, belum ada setup valid saat ini")
+                gate_icon = "⭐" if quality_gate == "PREMIUM" else "✓"
+                print(f"  🔍 Scanning {len(symbols)} symbols | {gate_icon} {quality_gate} | Dir:{'/'.join(sorted(allowed_dirs))} | {ctx_reason}")
+                candidates, skipped = parallel_scan(symbols, allowed_dirs, quality_gate)
+
+                if candidates:
+                    candidates.sort(key=lambda x: x[5].get("score_num", 0), reverse=True)
+                    print(f"\n  🎯 {len(candidates)} setup valid | {skipped} di-skip")
+                    for sym, side, sl, tp1, tp2, info in candidates[:3]:
+                        print(f"     ⭐ {sym} {side} | Score:{info.get('score','?')} | "
+                              f"Confluence:{info.get('confluence','?')}/{MIN_CONFLUENCE} | "
+                              f"R:R:{info.get('rr','?')} | Gate:{info.get('quality_gate','?')}")
+                    for sym, side, sl, tp1, tp2, info in candidates:
+                        if len(open_positions) >= MAX_POSITIONS: break
+                        open_trade(sym, side, sl, tp1, tp2, info)
+                else:
+                    print(f"  ⏳ {skipped} di-scan, belum ada setup valid saat ini")
         else:
             if _in_cooldown:
                 print(f"  🧊 Global Cooldown — {cooldown_reason()}")
